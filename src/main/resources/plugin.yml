@@ -7,7 +7,7 @@ author: Sylvye
 commands:
   scavengers:
     description: Open the scavenger hunt GUI
-    usage: /scavengers [settings]
+    usage: /scavengers [rewards|submit|settings|stop --force]
     aliases: [scav, scavengerhunt]
     permission: scavengers.use
 permissions:

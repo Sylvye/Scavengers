@@ -18,6 +18,7 @@ public final class HuntManager {
     public final DraftConfig draft;
     public final HuntState state;
     public final Map<UUID, List<ItemStack>> claims;
+    private final Map<UUID, Integer> pendingSubmissions = new HashMap<>();
 
     public HuntManager(ScavengersPlugin plugin, Persistence persistence, Persistence.Loaded loaded) {
         this.plugin = plugin; this.persistence = persistence;
@@ -25,15 +26,18 @@ public final class HuntManager {
     }
 
     public boolean start() {
-        if (state.active || draft.items.isEmpty()) return false;
+        if (startError() != null) return false;
         state.active = true;
         state.startedAt = System.currentTimeMillis();
         state.winner = null;
         state.finishers.clear();
         state.progress.clear();
         state.matchMode = draft.matchMode;
-        state.sequence = new ArrayList<>(draft.items);
-        if (draft.sequenceMode == SequenceMode.SHUFFLED) Collections.shuffle(state.sequence);
+        state.stagesPerHunt = draft.stagesPerHunt;
+        state.announceMilestones = draft.announceMilestones;
+        state.consumeRequiredItems = draft.consumeRequiredItems;
+        state.sequence = randomSequence(draft.items, draft.stagesPerHunt, new Random());
+        pendingSubmissions.clear();
         for (PrizeTier tier : PrizeTier.values()) state.prizes.put(tier, cloneStacks(draft.prizes.get(tier)));
         for (Player player : Bukkit.getOnlinePlayers()) state.progress.put(player.getUniqueId(), 0);
         save();
@@ -45,6 +49,7 @@ public final class HuntManager {
     public boolean stop() {
         if (!state.active) return false;
         state.active = false;
+        pendingSubmissions.clear();
         save();
         Bukkit.broadcast(Items.text("The scavenger hunt was stopped by an administrator.", NamedTextColor.RED));
         return true;
@@ -65,16 +70,88 @@ public final class HuntManager {
         while (state.active && index < state.sequence.size()) {
             HuntItem target = state.sequence.get(index);
             int found = Items.count(player.getInventory().getContents(), target, state.matchMode);
-            if (found < target.amount()) break;
-            index++;
-            state.progress.put(player.getUniqueId(), index);
+            if (found < target.amount()) {
+                pendingSubmissions.remove(player.getUniqueId());
+                break;
+            }
+            if (state.consumeRequiredItems) {
+                if (!Objects.equals(pendingSubmissions.get(player.getUniqueId()), index)) {
+                    pendingSubmissions.put(player.getUniqueId(), index);
+                    Component prompt = Items.text("You have the items for stage " + (index + 1) + ". ", NamedTextColor.YELLOW)
+                            .append(Items.text("[Submit Items]", NamedTextColor.GREEN)
+                                    .clickEvent(ClickEvent.runCommand("/scav submit " + index)));
+                    player.sendMessage(prompt);
+                }
+                break;
+            }
+            completeStage(player, index);
             changed = true;
-            player.sendMessage(Items.text("✓ Objective complete!", NamedTextColor.GREEN));
-            player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.8f, 1.25f);
-            if (index == state.sequence.size()) { finish(player); return; }
-            announceCurrent(player);
+            index++;
+            if (!state.active || index == state.sequence.size()) return;
         }
         if (changed) save();
+    }
+
+    public boolean submit(Player player, Integer expectedStage) {
+        if (!state.active || !state.consumeRequiredItems) {
+            player.sendMessage(Items.text("There is no item submission waiting for you.", NamedTextColor.RED));
+            return false;
+        }
+        int index = state.progress(player.getUniqueId());
+        Integer pending = pendingSubmissions.get(player.getUniqueId());
+        if (pending == null || pending != index || (expectedStage != null && expectedStage != index)) {
+            player.sendMessage(Items.text("That item submission is no longer valid.", NamedTextColor.RED));
+            return false;
+        }
+        HuntItem target = state.sequence.get(index);
+        if (!Items.remove(player.getInventory(), target, state.matchMode)) {
+            pendingSubmissions.remove(player.getUniqueId());
+            player.sendMessage(Items.text("You no longer have enough items to submit for this stage.", NamedTextColor.RED));
+            return false;
+        }
+        pendingSubmissions.remove(player.getUniqueId());
+        completeStage(player, index);
+        if (state.active) check(player);
+        return true;
+    }
+
+    private void completeStage(Player player, int index) {
+        int completed = index + 1;
+        state.progress.put(player.getUniqueId(), completed);
+        player.sendMessage(Items.text("✓ Objective complete!", NamedTextColor.GREEN));
+        player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.8f, 1.25f);
+        if (state.announceMilestones) Bukkit.broadcast(Component.empty().append(player.displayName())
+                .append(Items.text(" has completed stage " + completed + "/" + state.sequence.size(), NamedTextColor.YELLOW)));
+        if (completed == state.sequence.size()) finish(player);
+        else announceCurrent(player);
+        save();
+    }
+
+    public String startError() {
+        if (state.active) return "A hunt is already active.";
+        if (draft.items.isEmpty()) return "Add at least one hunt pool item first.";
+        if (draft.stagesPerHunt < 1 || draft.stagesPerHunt > draft.items.size())
+            return "Set stages per hunt between 1 and " + draft.items.size() + ".";
+        return null;
+    }
+
+    public boolean containsEquivalent(HuntItem candidate, MatchMode mode) {
+        return draft.items.stream().anyMatch(existing -> Items.sameTarget(existing, candidate, mode));
+    }
+
+    public boolean hasDuplicates(MatchMode mode) {
+        for (int i = 0; i < draft.items.size(); i++) {
+            for (int j = i + 1; j < draft.items.size(); j++) {
+                if (Items.sameTarget(draft.items.get(i), draft.items.get(j), mode)) return true;
+            }
+        }
+        return false;
+    }
+
+    static List<HuntItem> randomSequence(List<HuntItem> pool, int count, Random random) {
+        List<HuntItem> result = new ArrayList<>(pool);
+        Collections.shuffle(result, random);
+        return new ArrayList<>(result.subList(0, count));
     }
 
     private void finish(Player player) {

@@ -17,7 +17,9 @@ The deployable JAR is written to `build/libs/Scavengers-1.0.0.jar`.
 
 ## Use
 
-Run `/scav`, `/scavengers`, or `/scavengerhunt` to open the player hunt GUI. Administrators can open the separate configuration dashboard with `/scavengers settings` (or the equivalent alias). All hunt settings, objectives, prizes, and controls are available in-game.
+Run `/scav`, `/scavengers`, or `/scavengerhunt` to open the player hunt GUI. Players can inspect the active hunt's prizes with `/scav rewards` and confirm a required-item submission with the clickable chat prompt or `/scav submit`.
+
+Administrators can open the configuration dashboard with `/scav settings`. The dashboard configures the unique item pool, the number of randomly selected stages, prizes, milestone announcements, optional confirmed item consumption, and hunt controls. `/scav stop --force` immediately stops an active hunt for an administrator or the server console while preserving progress and earned reward claims.
 
 Permissions:
 

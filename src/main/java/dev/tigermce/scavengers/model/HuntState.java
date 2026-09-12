@@ -9,6 +9,9 @@ public final class HuntState {
     public List<HuntItem> sequence = new ArrayList<>();
     public final EnumMap<PrizeTier, List<ItemStack>> prizes = new EnumMap<>(PrizeTier.class);
     public MatchMode matchMode = MatchMode.MATERIAL;
+    public int stagesPerHunt;
+    public boolean announceMilestones;
+    public boolean consumeRequiredItems;
     public final Map<UUID, Integer> progress = new HashMap<>();
     public UUID winner;
     public final List<UUID> finishers = new ArrayList<>();

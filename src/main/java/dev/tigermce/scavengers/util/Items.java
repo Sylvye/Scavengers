@@ -8,6 +8,7 @@ import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.ArrayList;
@@ -49,11 +50,40 @@ public final class Items {
         ItemStack wanted = target.item();
         for (ItemStack stack : contents) {
             if (stack == null || stack.getType().isAir()) continue;
-            boolean matches = mode == MatchMode.MATERIAL
-                    ? stack.getType() == wanted.getType()
-                    : stack.isSimilar(wanted);
+            boolean matches = matches(stack, wanted, mode);
             if (matches) total += stack.getAmount();
         }
         return total;
+    }
+
+    public static boolean matches(ItemStack stack, ItemStack wanted, MatchMode mode) {
+        return stack != null && !stack.getType().isAir() && (mode == MatchMode.MATERIAL
+                ? stack.getType() == wanted.getType()
+                : stack.isSimilar(wanted));
+    }
+
+    public static boolean sameTarget(HuntItem first, HuntItem second, MatchMode mode) {
+        return matches(first.item(), second.item(), mode);
+    }
+
+    public static boolean remove(PlayerInventory inventory, HuntItem target, MatchMode mode) {
+        ItemStack[] contents = inventory.getContents();
+        if (count(contents, target, mode) < target.amount()) return false;
+        ItemStack wanted = target.item();
+        int remaining = target.amount();
+        for (int i = 0; i < contents.length && remaining > 0; i++) {
+            ItemStack stack = contents[i];
+            if (!matches(stack, wanted, mode)) continue;
+            int taken = Math.min(remaining, stack.getAmount());
+            remaining -= taken;
+            if (taken == stack.getAmount()) contents[i] = null;
+            else {
+                ItemStack reduced = stack.clone();
+                reduced.setAmount(stack.getAmount() - taken);
+                contents[i] = reduced;
+            }
+        }
+        inventory.setContents(contents);
+        return true;
     }
 }

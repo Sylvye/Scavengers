@@ -1,6 +1,7 @@
 package dev.tigermce.scavengers;
 
 import dev.tigermce.scavengers.model.HuntState;
+import dev.tigermce.scavengers.model.HuntItem;
 import dev.tigermce.scavengers.model.PrizeTier;
 import org.bukkit.inventory.ItemStack;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,19 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class HuntManagerTest {
+    @Test void randomSequenceSelectsRequestedUniqueEntriesWithoutChangingPool() {
+        HuntItem first = mock(HuntItem.class);
+        HuntItem second = mock(HuntItem.class);
+        HuntItem third = mock(HuntItem.class);
+        var pool = new java.util.ArrayList<>(java.util.List.of(first, second, third));
+
+        var selected = HuntManager.randomSequence(pool, 2, new java.util.Random(42));
+
+        assertEquals(2, selected.size());
+        assertEquals(2, new java.util.HashSet<>(selected).size());
+        assertEquals(java.util.List.of(first, second, third), pool);
+    }
+
     @Test void everyPlaceReceivesCompletionPrize() {
         HuntState state = new HuntState();
         ItemStack completion = stackWithClone();

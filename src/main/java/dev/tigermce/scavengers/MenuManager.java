@@ -22,16 +22,18 @@ public final class MenuManager implements Listener {
     private final ScavengersPlugin plugin;
     private final HuntManager hunts;
     private final Map<UUID, CountRequest> countRequests = new HashMap<>();
+    private final Set<UUID> stageCountRequests = new HashSet<>();
 
     public MenuManager(ScavengersPlugin plugin, HuntManager hunts) { this.plugin = plugin; this.hunts = hunts; }
 
-    private sealed interface Menu extends InventoryHolder permits Dashboard, Settings, Editor, Rewards, Progress, Confirm {
+    private sealed interface Menu extends InventoryHolder permits Dashboard, Settings, Editor, Rewards, RewardPreview, Progress, Confirm {
         @Override default Inventory getInventory() { return null; }
     }
     private record Dashboard() implements Menu {}
     private record Settings() implements Menu {}
     private record Editor(int page) implements Menu {}
     private record Rewards(PrizeTier tier, int page) implements Menu {}
+    private record RewardPreview(PrizeTier tier, int page) implements Menu {}
     private record Progress(int page) implements Menu {}
     private record Confirm(Action action, int returnPage) implements Menu {}
     private record CountRequest(int index, int returnPage) {}
@@ -41,33 +43,38 @@ public final class MenuManager implements Listener {
         Inventory inv = Bukkit.createInventory(new Dashboard(), 27, title("Scavengers • Admin"));
         fill(inv);
         inv.setItem(10, Items.button(Material.COMPASS, "Edit Hunt Items", NamedTextColor.AQUA,
-                hunts.draft.items.size() + " configured", "Click to edit the shared sequence"));
+                hunts.draft.items.size() + " in pool", "Click to edit the random selection pool"));
         int prizeCount = hunts.draft.prizes.values().stream().mapToInt(List::size).sum();
         inv.setItem(11, Items.button(Material.CHEST, "Edit Prizes", NamedTextColor.GOLD,
                 prizeCount + " prize stacks", "1st, 2nd, 3rd, and completion"));
         inv.setItem(12, Items.button(Material.COMPARATOR, "Settings", NamedTextColor.LIGHT_PURPLE,
-                "Match: " + hunts.draft.matchMode, "Sequence: " + hunts.draft.sequenceMode,
-                "Left-click: match mode", "Right-click: sequence mode"));
+                "Match: " + hunts.draft.matchMode, "Stages: " + hunts.draft.stagesPerHunt,
+                "Milestones: " + onOff(hunts.draft.announceMilestones),
+                "Consume items: " + onOff(hunts.draft.consumeRequiredItems)));
         inv.setItem(14, Items.button(Material.BOOK, "View Progress", NamedTextColor.GREEN,
                 hunts.state.active ? "Hunt is active" : "No active hunt"));
         inv.setItem(16, hunts.state.active
                 ? Items.button(Material.BARRIER, "Stop Hunt", NamedTextColor.RED, "Requires confirmation")
                 : Items.button(Material.LIME_DYE, "Start Hunt", NamedTextColor.GREEN,
-                    hunts.draft.items.isEmpty() ? "Add at least one item first" : "Starts for all online players", "Requires confirmation"));
+                    hunts.startError() == null ? "Starts for all online players" : hunts.startError(), "Requires confirmation"));
         player.openInventory(inv);
     }
 
     public void openSettings(Player player) {
         Inventory inv = Bukkit.createInventory(new Settings(), 27, title("Scavengers • Settings"));
         fill(inv);
-        inv.setItem(11, Items.button(hunts.draft.matchMode == MatchMode.MATERIAL ? Material.GRASS_BLOCK : Material.ENCHANTED_BOOK,
+        inv.setItem(10, Items.button(hunts.draft.matchMode == MatchMode.MATERIAL ? Material.GRASS_BLOCK : Material.ENCHANTED_BOOK,
                 "Match Mode: " + hunts.draft.matchMode, NamedTextColor.AQUA,
                 hunts.draft.matchMode == MatchMode.MATERIAL ? "Matches item material only" : "Matches all item data/components",
                 "Click to toggle"));
-        inv.setItem(15, Items.button(hunts.draft.sequenceMode == SequenceMode.ORDERED ? Material.REPEATER : Material.ENDER_EYE,
-                "Sequence: " + hunts.draft.sequenceMode, NamedTextColor.LIGHT_PURPLE,
-                hunts.draft.sequenceMode == SequenceMode.ORDERED ? "Uses the configured GUI order" : "Shuffles once for everyone at start",
-                "Click to toggle"));
+        inv.setItem(12, Items.button(Material.REPEATER, "Stages Per Hunt: " + hunts.draft.stagesPerHunt, NamedTextColor.LIGHT_PURPLE,
+                "Pool size: " + hunts.draft.items.size(), "Click to set"));
+        inv.setItem(14, Items.button(hunts.draft.announceMilestones ? Material.BELL : Material.GRAY_DYE,
+                "Announce Milestones: " + onOff(hunts.draft.announceMilestones), NamedTextColor.GOLD,
+                "Broadcasts player stage progress", "Never reveals item details", "Click to toggle"));
+        inv.setItem(16, Items.button(hunts.draft.consumeRequiredItems ? Material.HOPPER : Material.CHEST,
+                "Consume Required Items: " + onOff(hunts.draft.consumeRequiredItems), NamedTextColor.RED,
+                "Players must confirm every stage", "Click to toggle"));
         inv.setItem(22, Items.button(Material.ARROW, "Back", NamedTextColor.YELLOW));
         player.openInventory(inv);
     }
@@ -82,12 +89,11 @@ public final class MenuManager implements Listener {
             inv.setItem(slot, Items.display(target, false, List.of(
                     Items.text("Required: " + target.amount(), NamedTextColor.YELLOW),
                     Items.text("Right-click: set amount", NamedTextColor.AQUA),
-                    Items.text("Shift-left/right: move earlier/later", NamedTextColor.GRAY),
                     Items.text("Left-click: remove", NamedTextColor.RED))));
         }
         controls(inv, page, hunts.draft.items.size());
         inv.setItem(49, Items.button(Material.HOPPER, "Add From Your Inventory", NamedTextColor.GREEN,
-                "Click any item in your inventory below", "A copy is appended to the sequence"));
+                "Click any item in your inventory below", "Duplicate pool entries are rejected"));
         inv.setItem(50, Items.button(Material.TNT, "Clear All", NamedTextColor.RED, "Requires confirmation"));
         inv.setItem(53, Items.button(Material.ARROW, "Back", NamedTextColor.YELLOW));
         player.openInventory(inv);
@@ -117,6 +123,28 @@ public final class MenuManager implements Listener {
         player.openInventory(inv);
     }
 
+    public void openRewardPreview(Player player, PrizeTier tier, int requestedPage) {
+        if (hunts.state.sequence.isEmpty()) {
+            player.sendMessage(Items.text("No scavenger hunt rewards are available to preview yet.", NamedTextColor.GRAY));
+            return;
+        }
+        List<ItemStack> prizes = hunts.state.prizes.get(tier);
+        int page = boundedPage(requestedPage, prizes.size());
+        Inventory inv = Bukkit.createInventory(new RewardPreview(tier, page), 54, title(tier.label() + " Rewards • " + (page + 1)));
+        for (int slot = 0; slot < PAGE_SIZE; slot++) {
+            int index = page * PAGE_SIZE + slot;
+            if (index >= prizes.size()) break;
+            inv.setItem(slot, prizes.get(index).clone());
+        }
+        controls(inv, page, prizes.size());
+        inv.setItem(46, Items.button(Material.GOLD_INGOT, "1st Place", NamedTextColor.GOLD));
+        inv.setItem(47, Items.button(Material.IRON_INGOT, "2nd Place", NamedTextColor.GRAY));
+        inv.setItem(48, Items.button(Material.COPPER_INGOT, "3rd Place", NamedTextColor.YELLOW));
+        inv.setItem(49, Items.button(Material.EMERALD, "Completion", NamedTextColor.GREEN));
+        inv.setItem(53, Items.button(Material.ARROW, "Back", NamedTextColor.YELLOW));
+        player.openInventory(inv);
+    }
+
     public void openProgress(Player player, int requestedPage) {
         List<HuntItem> sequence = hunts.state.sequence;
         int page = boundedPage(requestedPage, sequence.size());
@@ -141,8 +169,9 @@ public final class MenuManager implements Listener {
         inv.setItem(49, Items.button(Material.CLOCK, hunts.state.active ? "Hunt In Progress" : "Hunt Finished", hunts.state.active ? NamedTextColor.GREEN : NamedTextColor.GRAY,
                 "Progress: " + progress + "/" + sequence.size(), "Elapsed: " + elapsed,
                 "Match mode: " + hunts.state.matchMode));
+        inv.setItem(48, Items.button(Material.CHEST, "Preview Rewards", NamedTextColor.GOLD, "View prizes before investing your time"));
         if (hunts.claims.containsKey(player.getUniqueId())) inv.setItem(50,
-                Items.button(Material.CHEST_MINECART, "Claim Winner Reward", NamedTextColor.GOLD, "Click to claim once"));
+                Items.button(Material.CHEST_MINECART, "Claim Rewards", NamedTextColor.GOLD, "Click to claim once"));
         player.openInventory(inv);
     }
 
@@ -159,9 +188,10 @@ public final class MenuManager implements Listener {
                 HuntItem target = hunts.draft.items.get(i);
                 inv.setItem(9 + i, Items.display(target, false, List.of(Items.text("Required: " + target.amount(), NamedTextColor.YELLOW))));
             }
-            inv.setItem(4, Items.button(Material.MAP, "Sequence Preview", NamedTextColor.GOLD,
-                    hunts.draft.items.size() + " objectives", "Match: " + hunts.draft.matchMode,
-                    "Sequence: " + hunts.draft.sequenceMode,
+            inv.setItem(4, Items.button(Material.MAP, "Random Pool Preview", NamedTextColor.GOLD,
+                    hunts.draft.stagesPerHunt + " selected from " + hunts.draft.items.size(), "Match: " + hunts.draft.matchMode,
+                    "Milestones: " + onOff(hunts.draft.announceMilestones),
+                    "Consume items: " + onOff(hunts.draft.consumeRequiredItems),
                     hunts.draft.items.size() > 27 ? "Showing the first 27" : "Review before starting"));
         }
         player.openInventory(inv);
@@ -173,12 +203,20 @@ public final class MenuManager implements Listener {
         player.sendMessage(Items.text("Type the required amount in chat (1–1,000,000), or type 'cancel'.", NamedTextColor.YELLOW));
     }
 
+    private void openStageCount(Player player) {
+        stageCountRequests.add(player.getUniqueId());
+        player.closeInventory();
+        player.sendMessage(Items.text("Type the number of unique stages to select (1–" + hunts.draft.items.size() + "), or type 'cancel'.", NamedTextColor.YELLOW));
+    }
+
     @EventHandler public void onChat(AsyncChatEvent event) {
         CountRequest request = countRequests.remove(event.getPlayer().getUniqueId());
-        if (request == null) return;
+        boolean stageRequest = stageCountRequests.remove(event.getPlayer().getUniqueId());
+        if (request == null && !stageRequest) return;
         event.setCancelled(true);
         String input = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
-        Bukkit.getScheduler().runTask(plugin, () -> applyCountInput(event.getPlayer(), request, input));
+        if (request != null) Bukkit.getScheduler().runTask(plugin, () -> applyCountInput(event.getPlayer(), request, input));
+        else Bukkit.getScheduler().runTask(plugin, () -> applyStageCountInput(event.getPlayer(), input));
     }
 
     @EventHandler public void onClick(InventoryClickEvent event) {
@@ -191,6 +229,7 @@ public final class MenuManager implements Listener {
         else if (menu instanceof Settings) settingsClick(player, raw);
         else if (menu instanceof Editor editor) editorClick(player, editor, raw, event);
         else if (menu instanceof Rewards rewards) rewardsClick(player, rewards, raw, event);
+        else if (menu instanceof RewardPreview preview) rewardPreviewClick(player, preview, raw);
         else if (menu instanceof Progress progress) progressClick(player, progress, raw);
         else if (menu instanceof Confirm confirm) confirmClick(player, confirm, raw);
     }
@@ -210,8 +249,17 @@ public final class MenuManager implements Listener {
     }
 
     private void settingsClick(Player player, int slot) {
-        if (slot == 11) hunts.draft.matchMode = hunts.draft.matchMode == MatchMode.MATERIAL ? MatchMode.EXACT : MatchMode.MATERIAL;
-        else if (slot == 15) hunts.draft.sequenceMode = hunts.draft.sequenceMode == SequenceMode.ORDERED ? SequenceMode.SHUFFLED : SequenceMode.ORDERED;
+        if (slot == 10) {
+            MatchMode next = hunts.draft.matchMode == MatchMode.MATERIAL ? MatchMode.EXACT : MatchMode.MATERIAL;
+            if (hunts.hasDuplicates(next)) {
+                player.sendMessage(Items.text("That match mode would make pool entries duplicates. Remove the conflicts first.", NamedTextColor.RED));
+                return;
+            }
+            hunts.draft.matchMode = next;
+        }
+        else if (slot == 12) { openStageCount(player); return; }
+        else if (slot == 14) hunts.draft.announceMilestones = !hunts.draft.announceMilestones;
+        else if (slot == 16) hunts.draft.consumeRequiredItems = !hunts.draft.consumeRequiredItems;
         else if (slot == 22) { openDashboard(player); return; }
         else return;
         hunts.save(); openSettings(player); tick(player);
@@ -222,15 +270,18 @@ public final class MenuManager implements Listener {
             int index = menu.page * PAGE_SIZE + raw;
             if (index >= hunts.draft.items.size()) return;
             if (event.isRightClick() && !event.getClick().isShiftClick()) { openCount(player, index, menu.page); return; }
-            if (event.getClick() == ClickType.SHIFT_LEFT && index > 0) Collections.swap(hunts.draft.items, index, index - 1);
-            else if (event.getClick() == ClickType.SHIFT_RIGHT && index + 1 < hunts.draft.items.size()) Collections.swap(hunts.draft.items, index, index + 1);
-            else hunts.draft.items.remove(index);
+            hunts.draft.items.remove(index);
             hunts.save(); openEditor(player, menu.page); tick(player); return;
         }
         if (raw >= event.getView().getTopInventory().getSize()) {
             ItemStack clicked = event.getCurrentItem();
             if (clicked != null && !clicked.getType().isAir()) {
-                hunts.draft.items.add(new HuntItem(clicked, clicked.getAmount())); hunts.save();
+                HuntItem candidate = new HuntItem(clicked, clicked.getAmount());
+                if (hunts.containsEquivalent(candidate, hunts.draft.matchMode)) {
+                    player.sendMessage(Items.text("That item is already in the hunt pool.", NamedTextColor.RED));
+                    return;
+                }
+                hunts.draft.items.add(candidate); hunts.save();
                 openEditor(player, (hunts.draft.items.size() - 1) / PAGE_SIZE); tick(player);
             }
             return;
@@ -263,10 +314,21 @@ public final class MenuManager implements Listener {
         else if (raw == 53) openDashboard(player);
     }
 
+    private void rewardPreviewClick(Player player, RewardPreview menu, int raw) {
+        if (raw == 45) openRewardPreview(player, menu.tier, menu.page - 1);
+        else if (raw == 46) openRewardPreview(player, PrizeTier.FIRST, 0);
+        else if (raw == 47) openRewardPreview(player, PrizeTier.SECOND, 0);
+        else if (raw == 48) openRewardPreview(player, PrizeTier.THIRD, 0);
+        else if (raw == 49) openRewardPreview(player, PrizeTier.COMPLETION, 0);
+        else if (raw == 52) openRewardPreview(player, menu.tier, menu.page + 1);
+        else if (raw == 53) openProgress(player, 0);
+    }
+
     private void progressClick(Player player, Progress menu, int slot) {
         if (slot == 45) openProgress(player, menu.page - 1);
         else if (slot == 52) openProgress(player, menu.page + 1);
         else if (slot == 50 && hunts.claim(player)) openProgress(player, menu.page);
+        else if (slot == 48) openRewardPreview(player, PrizeTier.COMPLETION, 0);
     }
 
     private void confirmClick(Player player, Confirm menu, int slot) {
@@ -276,7 +338,7 @@ public final class MenuManager implements Listener {
         if (slot != confirmSlot) return;
         switch (menu.action) {
             case START -> {
-                if (!hunts.start()) player.sendMessage(Items.text(hunts.draft.items.isEmpty() ? "Add at least one hunt item first." : "A hunt is already active.", NamedTextColor.RED));
+                if (!hunts.start()) player.sendMessage(Items.text(hunts.startError(), NamedTextColor.RED));
                 openDashboard(player);
             }
             case STOP -> { hunts.stop(); openDashboard(player); }
@@ -303,6 +365,19 @@ public final class MenuManager implements Listener {
         }
     }
 
+    private void applyStageCountInput(Player player, String input) {
+        if (input.equalsIgnoreCase("cancel")) { openSettings(player); return; }
+        try {
+            int count = Integer.parseInt(input);
+            if (count < 1 || count > hunts.draft.items.size()) throw new NumberFormatException();
+            hunts.draft.stagesPerHunt = count;
+            hunts.save(); openSettings(player); tick(player);
+        } catch (NumberFormatException e) {
+            player.sendMessage(Items.text("Enter a whole number from 1 to " + hunts.draft.items.size() + ".", NamedTextColor.RED));
+            stageCountRequests.add(player.getUniqueId());
+        }
+    }
+
     private void controls(Inventory inv, int page, int count) {
         for (int i = 45; i < 54; i++) inv.setItem(i, Items.button(Material.GRAY_STAINED_GLASS_PANE, " ", NamedTextColor.GRAY));
         if (page > 0) inv.setItem(45, Items.button(Material.ARROW, "Previous Page", NamedTextColor.YELLOW));
@@ -312,5 +387,6 @@ public final class MenuManager implements Listener {
     private Component title(String value) { return Items.text(value, NamedTextColor.DARK_AQUA); }
     private int boundedPage(int page, int count) { return Math.max(0, Math.min(page, Math.max(0, (count - 1) / PAGE_SIZE))); }
     private String formatDuration(long millis) { Duration d = Duration.ofMillis(Math.max(0, millis)); return "%02d:%02d:%02d".formatted(d.toHours(), d.toMinutesPart(), d.toSecondsPart()); }
+    private String onOff(boolean value) { return value ? "ON" : "OFF"; }
     private void tick(Player player) { player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.2f); }
 }

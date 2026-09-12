@@ -1,6 +1,7 @@
 package dev.tigermce.scavengers;
 
 import dev.tigermce.scavengers.model.*;
+import dev.tigermce.scavengers.util.Items;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.inventory.ItemStack;
@@ -9,10 +10,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
+import java.util.logging.Logger;
 
 public final class Persistence {
     private final File folder;
-    public Persistence(File folder) { this.folder = folder; }
+    private final Logger logger;
+    public Persistence(File folder, Logger logger) { this.folder = folder; this.logger = logger; }
 
     public record Loaded(DraftConfig draft, HuntState state, Map<UUID, List<ItemStack>> claims) {}
 
@@ -24,8 +27,13 @@ public final class Persistence {
         if (!file.exists()) return new Loaded(draft, state, claims);
         YamlConfiguration y = YamlConfiguration.loadConfiguration(file);
         draft.matchMode = enumValue(MatchMode.class, y.getString("draft.match-mode"), MatchMode.MATERIAL);
-        draft.sequenceMode = enumValue(SequenceMode.class, y.getString("draft.sequence-mode"), SequenceMode.ORDERED);
         draft.items.addAll(readTargets(y, "draft.items"));
+        int duplicates = removeDuplicateTargets(draft.items, draft.matchMode);
+        if (duplicates > 0) logger.warning("Removed " + duplicates + " duplicate hunt pool entr" + (duplicates == 1 ? "y" : "ies") + " while migrating data.yml.");
+        draft.stagesPerHunt = y.contains("draft.stages-per-hunt")
+                ? y.getInt("draft.stages-per-hunt") : draft.items.size();
+        draft.announceMilestones = y.getBoolean("draft.announce-milestones", false);
+        draft.consumeRequiredItems = y.getBoolean("draft.consume-required-items", false);
         for (PrizeTier tier : PrizeTier.values()) draft.prizes.get(tier).addAll(readStacks(y, "draft.prizes." + tier.name().toLowerCase()));
         if (draft.prizes.get(PrizeTier.FIRST).isEmpty()) draft.prizes.get(PrizeTier.FIRST).addAll(readStacks(y, "draft.rewards"));
 
@@ -33,6 +41,9 @@ public final class Persistence {
         state.startedAt = y.getLong("hunt.started-at");
         state.matchMode = enumValue(MatchMode.class, y.getString("hunt.match-mode"), MatchMode.MATERIAL);
         state.sequence = readTargets(y, "hunt.sequence");
+        state.stagesPerHunt = y.getInt("hunt.stages-per-hunt", state.sequence.size());
+        state.announceMilestones = y.getBoolean("hunt.announce-milestones", false);
+        state.consumeRequiredItems = y.getBoolean("hunt.consume-required-items", false);
         for (PrizeTier tier : PrizeTier.values()) state.prizes.get(tier).addAll(readStacks(y, "hunt.prizes." + tier.name().toLowerCase()));
         if (state.prizes.get(PrizeTier.FIRST).isEmpty()) state.prizes.get(PrizeTier.FIRST).addAll(readStacks(y, "hunt.rewards"));
         String winner = y.getString("hunt.winner");
@@ -56,12 +67,17 @@ public final class Persistence {
         folder.mkdirs();
         YamlConfiguration y = new YamlConfiguration();
         y.set("draft.match-mode", draft.matchMode.name());
-        y.set("draft.sequence-mode", draft.sequenceMode.name());
+        y.set("draft.stages-per-hunt", draft.stagesPerHunt);
+        y.set("draft.announce-milestones", draft.announceMilestones);
+        y.set("draft.consume-required-items", draft.consumeRequiredItems);
         writeTargets(y, "draft.items", draft.items);
         for (PrizeTier tier : PrizeTier.values()) y.set("draft.prizes." + tier.name().toLowerCase(), cloneStacks(draft.prizes.get(tier)));
         y.set("hunt.active", state.active);
         y.set("hunt.started-at", state.startedAt);
         y.set("hunt.match-mode", state.matchMode.name());
+        y.set("hunt.stages-per-hunt", state.stagesPerHunt);
+        y.set("hunt.announce-milestones", state.announceMilestones);
+        y.set("hunt.consume-required-items", state.consumeRequiredItems);
         writeTargets(y, "hunt.sequence", state.sequence);
         for (PrizeTier tier : PrizeTier.values()) y.set("hunt.prizes." + tier.name().toLowerCase(), cloneStacks(state.prizes.get(tier)));
         y.set("hunt.winner", state.winner == null ? null : state.winner.toString());
@@ -99,6 +115,16 @@ public final class Persistence {
         return result;
     }
     private static List<ItemStack> cloneStacks(List<ItemStack> stacks) { return stacks.stream().map(ItemStack::clone).toList(); }
+    private static int removeDuplicateTargets(List<HuntItem> items, MatchMode mode) {
+        int originalSize = items.size();
+        List<HuntItem> unique = new ArrayList<>();
+        for (HuntItem item : items) {
+            if (unique.stream().noneMatch(existing -> Items.sameTarget(existing, item, mode))) unique.add(item);
+        }
+        items.clear();
+        items.addAll(unique);
+        return originalSize - unique.size();
+    }
     private static UUID parseUuid(String value) { try { return UUID.fromString(value); } catch (IllegalArgumentException e) { return null; } }
     private static <T extends Enum<T>> T enumValue(Class<T> type, String value, T fallback) {
         try { return value == null ? fallback : Enum.valueOf(type, value); } catch (IllegalArgumentException e) { return fallback; }

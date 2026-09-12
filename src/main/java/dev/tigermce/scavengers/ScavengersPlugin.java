@@ -1,5 +1,6 @@
 package dev.tigermce.scavengers;
 
+import dev.tigermce.scavengers.model.PrizeTier;
 import dev.tigermce.scavengers.util.Items;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -18,7 +19,7 @@ public final class ScavengersPlugin extends JavaPlugin implements Listener, Comm
     private MenuManager menus;
 
     @Override public void onEnable() {
-        Persistence persistence = new Persistence(getDataFolder());
+        Persistence persistence = new Persistence(getDataFolder(), getLogger());
         hunts = new HuntManager(this, persistence, persistence.load());
         menus = new MenuManager(this, hunts);
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -32,8 +33,14 @@ public final class ScavengersPlugin extends JavaPlugin implements Listener, Comm
     @Override public void onDisable() { if (hunts != null) hunts.save(); }
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (args.length == 2 && args[0].equalsIgnoreCase("stop") && args[1].equalsIgnoreCase("--force")) {
+            if (!sender.hasPermission("scavengers.admin")) {
+                sender.sendMessage("You do not have permission to stop Scavengers.");
+            } else if (!hunts.stop()) sender.sendMessage("There is no active scavenger hunt.");
+            return true;
+        }
         if (!(sender instanceof Player player)) {
-            sender.sendMessage("Scavengers is configured entirely in-game by a player with scavengers.admin.");
+            sender.sendMessage("Usage: /" + label + " stop --force");
             return true;
         }
         if (!player.hasPermission("scavengers.use")) {
@@ -52,14 +59,34 @@ public final class ScavengersPlugin extends JavaPlugin implements Listener, Comm
             menus.openDashboard(player);
             return true;
         }
-        player.sendMessage(Items.text("Usage: /" + label + " [settings]", NamedTextColor.RED));
+        if (args.length == 1 && args[0].equalsIgnoreCase("rewards")) {
+            menus.openRewardPreview(player, PrizeTier.COMPLETION, 0);
+            return true;
+        }
+        if ((args.length == 1 || args.length == 2) && args[0].equalsIgnoreCase("submit")) {
+            Integer expectedStage = null;
+            if (args.length == 2) {
+                try { expectedStage = Integer.parseInt(args[1]); }
+                catch (NumberFormatException ignored) {
+                    player.sendMessage(Items.text("That item submission is invalid.", NamedTextColor.RED));
+                    return true;
+                }
+            }
+            hunts.submit(player, expectedStage);
+            return true;
+        }
+        player.sendMessage(Items.text("Usage: /" + label + " [rewards|submit|settings|stop --force]", NamedTextColor.RED));
         return true;
     }
 
     @Override public java.util.List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1 && sender.hasPermission("scavengers.admin") && "settings".startsWith(args[0].toLowerCase(java.util.Locale.ROOT))) {
-            return java.util.List.of("settings");
+        if (args.length == 1) {
+            java.util.List<String> options = new java.util.ArrayList<>(java.util.List.of("rewards", "submit"));
+            if (sender.hasPermission("scavengers.admin")) options.addAll(java.util.List.of("settings", "stop"));
+            String prefix = args[0].toLowerCase(java.util.Locale.ROOT);
+            return options.stream().filter(option -> option.startsWith(prefix)).toList();
         }
+        if (args.length == 2 && args[0].equalsIgnoreCase("stop") && sender.hasPermission("scavengers.admin") && "--force".startsWith(args[1])) return java.util.List.of("--force");
         return java.util.List.of();
     }
 
