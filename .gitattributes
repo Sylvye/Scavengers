@@ -1,0 +1,10 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Keep scripts consistent across platforms
+*.sh text eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+
+# Treat Gradle wrapper binaries as binary
+*.jar binary

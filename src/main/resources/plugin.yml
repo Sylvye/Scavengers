@@ -1,0 +1,19 @@
+name: Scavengers
+version: '${version}'
+main: dev.tigermce.scavengers.ScavengersPlugin
+api-version: '26.2'
+description: Server-wide, GUI-configured scavenger hunt races
+author: Sylvye
+commands:
+  scavengers:
+    description: Open the scavenger hunt GUI
+    usage: /scavengers [settings]
+    aliases: [scav, scavengerhunt]
+    permission: scavengers.use
+permissions:
+  scavengers.use:
+    description: View scavenger hunt progress
+    default: true
+  scavengers.admin:
+    description: Configure and control scavenger hunts
+    default: op
